@@ -1084,7 +1084,7 @@ function renderD1KChart(entries, d1kLogs) {
   var last14 = [];
   for (var i = 13; i >= 0; i--) {
     var d = new Date(); d.setDate(d.getDate() - i);
-    last14.push(d.toISOString().slice(0, 10));
+    last14.push(getLocalDate(d));
   }
   var labels = last14.map(d => d.slice(5));
   var cnt = (date, dev) => d1kLogs.filter(r => r.date === date && r.device === dev && r.status === '开启').length;
@@ -1184,7 +1184,7 @@ function renderSwitchChart(tab, entries, d1kLogs) {
   var last14 = [];
   for (var i = 13; i >= 0; i--) {
     var d = new Date(); d.setDate(d.getDate() - i);
-    last14.push(d.toISOString().slice(0, 10));
+    last14.push(getLocalDate(d));
   }
   var labels = last14.map(d => d.slice(5));
   var datasets = [];
@@ -1296,7 +1296,7 @@ async function loadAll() {
 
 async function renderFront() {
   var { entries, d1kLogs } = await loadAll();
-  var m = new Date().toISOString().slice(0, 7);
+  var m = getLocalDate().slice(0, 7);
   var me = entries.filter(e => e.date.startsWith(m));
   document.getElementById('m-elec').textContent = me.reduce((s, e) => s + (e.elec_usage || 0), 0).toFixed(1);
   document.getElementById('m-water').textContent = me.reduce((s, e) => s + (e.water_usage || 0), 0).toFixed(2);
@@ -1514,7 +1514,11 @@ function closeHandover() {
 }
 
 async function openDrawer() {
-  document.getElementById('inp-date').value = new Date().toISOString().slice(0, 10);
+  var now = new Date();
+  var localDate = now.getFullYear() + '-' + 
+    String(now.getMonth() + 1).padStart(2, '0') + '-' + 
+    String(now.getDate()).padStart(2, '0');
+  document.getElementById('inp-date').value = localDate;
   // 每次打开抽屉都从API拉最新操作员列表
   try {
     var r = await fetch(API + '/operators');
@@ -1614,7 +1618,7 @@ async function saveAll() {
   var date = dateEl.value;
   if (!date) { toast('请选择日期', 'err'); return; }
 
-  var today = new Date().toISOString().slice(0, 10);
+  var today = getLocalDate();
   if (date !== today) {
     if (!confirm('当前日期不是今天，是否继续保存为 ' + date + '？请确认填写日期是否正确。')) {
       return;
@@ -2003,7 +2007,7 @@ async function dataClear() {
 
 // ── 后台插入数据 ─────────────────────────────────────────
 function openInsertEnergy() {
-  var d = new Date().toISOString().slice(0,10);
+  var d = getLocalDate();
   document.getElementById('ins-e-date').value = d;
   document.getElementById('ins-e-msg').textContent = '';
   openModal('modal-insert-energy');
@@ -2081,7 +2085,7 @@ async function submitInsertEnergy() {
 
 function openInsertD1K() {
   var now = new Date();
-  document.getElementById('ins-d-date').value = now.toISOString().slice(0,10);
+  document.getElementById('ins-d-date').value = getLocalDate(now);
   document.getElementById('ins-d-time').value = now.toTimeString().slice(0,5);
   document.getElementById('ins-d-op').value = '';
   openModal('modal-insert-d1k');
@@ -2103,7 +2107,7 @@ async function submitInsertD1K() {
 
 function openInsertBoiler() {
   var now = new Date();
-  document.getElementById('ins-b-date').value = now.toISOString().slice(0,10);
+  document.getElementById('ins-b-date').value = getLocalDate(now);
   document.getElementById('ins-b-time').value = now.toTimeString().slice(0,5);
   document.getElementById('ins-b-op').value = '';
   openModal('modal-insert-boiler');
@@ -2270,6 +2274,14 @@ function toast(msg, type) {
   setTimeout(() => t.classList.remove('show'), 2500);
 }
 
+// ── 获取本地日期 ─────────────────────────────────────────
+function getLocalDate(d) {
+  d = d || new Date();
+  return d.getFullYear() + '-' + 
+    String(d.getMonth() + 1).padStart(2, '0') + '-' + 
+    String(d.getDate()).padStart(2, '0');
+}
+
 // ── Clock ─────────────────────────────────────────────────
 function updateClock() {
   var s = new Date().toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -2277,7 +2289,7 @@ function updateClock() {
 }
 
 // ── Init ──────────────────────────────────────────────────
-var td = new Date().toISOString().slice(0, 10);
+var td = getLocalDate();
 
 
 updateClock(); setInterval(updateClock, 1000);
