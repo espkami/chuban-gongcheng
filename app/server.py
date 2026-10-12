@@ -22,6 +22,19 @@ CITY_MAP = {
     "惠州":"Huizhou","中山":"Zhongshan","汕头":"Shantou",
 }
 
+# 8 个累计读数表的统一配置：meter_type -> (字段名, 倍率, 中文标签)
+# 换表记录与用量重算共用此配置，确保 8 个表行为一致
+METER_CONFIG = {
+    "elec_huanbei":   {"field": "elec_huanbei_raw",   "mult": 1500, "label": "环北线电表"},
+    "elec_datieguan": {"field": "elec_datieguan_raw", "mult": 1500, "label": "打铁关线电表"},
+    "dik1":           {"field": "dik1_raw",           "mult": 120,  "label": "DIK-1 分表"},
+    "dik2":           {"field": "dik2_raw",           "mult": 120,  "label": "DIK-2 分表"},
+    "dik5":           {"field": "dik5_raw",           "mult": 40,   "label": "DIK-5 分表"},
+    "water":          {"field": "water_raw",          "mult": 1,    "label": "水表"},
+    "gas":            {"field": "gas_raw",            "mult": 1,    "label": "气表"},
+    "hot_water":      {"field": "hot_water_raw",      "mult": 1,    "label": "热水表"},
+}
+
 def get_db():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -65,6 +78,19 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE IF NOT EXISTS meter_replacements (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        meter_type TEXT NOT NULL,
+        old_meter_end REAL,
+        new_meter_start REAL DEFAULT 0,
+        new_meter_reading REAL,
+        operator TEXT DEFAULT "",
+        notes TEXT DEFAULT "",
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(date, meter_type)
+    );
     CREATE TABLE IF NOT EXISTS daily_notes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         date TEXT NOT NULL,
@@ -175,6 +201,33 @@ def prev_raw_value(conn, field, date, exclude_id=None):
     row = conn.execute(sql, params).fetchone()
     return row[field] if row else None
 
+def get_replacement(conn, meter_type, date):
+    """查询某表在某天是否有换表记录；无则返回 None"""
+    row = conn.execute(
+        "SELECT * FROM meter_replacements WHERE date=? AND meter_type=?",
+        (date, meter_type)
+    ).fetchone()
+    return dict(row) if row else None
+
+def calc_usage_with_replacement(conn, meter_type, date, cur, exclude_id=None):
+    """带换表感知的用量计算：8 个累计读数表统一走此函数。
+    - 换表日：用量 = (旧表底数 − 上次读数) × 倍率 + (新表当日读数 − 新表起数) × 倍率
+    - 普通日：用量 = (当日读数 − 上次读数) × 倍率
+    """
+    cfg = METER_CONFIG.get(meter_type)
+    if not cfg or cur is None:
+        return 0
+    field = cfg["field"]
+    mult  = cfg["mult"]
+    rep = get_replacement(conn, meter_type, date)
+    if rep:
+        prev = prev_raw_value(conn, field, date, exclude_id)
+        seg_old = calc_usage(rep.get("old_meter_end"), prev, mult)
+        seg_new = calc_usage(cur, rep.get("new_meter_start") or 0, mult)
+        return round(seg_old + seg_new, 2)
+    # 普通日
+    return calc_usage(cur, prev_raw_value(conn, field, date, exclude_id), mult)
+
 def recalc_energy_entry(conn, row):
     hb = row["elec_huanbei_raw"]
     dtg = row["elec_datieguan_raw"]
@@ -185,14 +238,15 @@ def recalc_energy_entry(conn, row):
     gas = row["gas_raw"]
     hot = row["hot_water_raw"]
 
-    hb_u  = calc_usage(hb,  prev_raw_value(conn, "elec_huanbei_raw", row["date"], row["id"]), 1500)
-    dtg_u = calc_usage(dtg, prev_raw_value(conn, "elec_datieguan_raw", row["date"], row["id"]), 1500)
-    dk1_u = calc_usage(dk1, prev_raw_value(conn, "dik1_raw", row["date"], row["id"]), 120)
-    dk2_u = calc_usage(dk2, prev_raw_value(conn, "dik2_raw", row["date"], row["id"]), 120)
-    dk5_u = calc_usage(dk5, prev_raw_value(conn, "dik5_raw", row["date"], row["id"]), 40)
-    wat_u = calc_usage(wat, prev_raw_value(conn, "water_raw", row["date"], row["id"]))
-    gas_u = calc_usage(gas, prev_raw_value(conn, "gas_raw", row["date"], row["id"]))
-    hot_u = calc_usage(hot, prev_raw_value(conn, "hot_water_raw", row["date"], row["id"]))
+    # 8 个表统一走带换表感知的计算函数
+    hb_u  = calc_usage_with_replacement(conn, "elec_huanbei",   row["date"], hb,  row["id"])
+    dtg_u = calc_usage_with_replacement(conn, "elec_datieguan", row["date"], dtg, row["id"])
+    dk1_u = calc_usage_with_replacement(conn, "dik1",           row["date"], dk1, row["id"])
+    dk2_u = calc_usage_with_replacement(conn, "dik2",           row["date"], dk2, row["id"])
+    dk5_u = calc_usage_with_replacement(conn, "dik5",           row["date"], dk5, row["id"])
+    wat_u = calc_usage_with_replacement(conn, "water",          row["date"], wat, row["id"])
+    gas_u = calc_usage_with_replacement(conn, "gas",            row["date"], gas, row["id"])
+    hot_u = calc_usage_with_replacement(conn, "hot_water",     row["date"], hot, row["id"])
     elec_u = round((hb_u or 0) + (dtg_u or 0), 2)
 
     conn.execute("""UPDATE energy_entries SET
@@ -404,22 +458,15 @@ def save_entry():
             conn.commit()
         conn.close(); return jsonify({"ok":True})
 
-    # 每个字段各自找最近一条有值的历史记录作为基准（避免中间某天只填了部分字段导致基准为null）
-    def prev_val(field):
-        row = conn.execute(
-            f"SELECT {field} FROM energy_entries WHERE date<? AND {field} IS NOT NULL ORDER BY date DESC LIMIT 1",
-            (date,)
-        ).fetchone()
-        return row[field] if row else None
-
-    hb_u  = calc_usage(hb,  prev_val("elec_huanbei_raw"),  1500)
-    dtg_u = calc_usage(dtg, prev_val("elec_datieguan_raw"), 1500)
-    dk1_u = calc_usage(dk1, prev_val("dik1_raw"),           120)
-    dk2_u = calc_usage(dk2, prev_val("dik2_raw"),           120)
-    dk5_u = calc_usage(dk5, prev_val("dik5_raw"),           40)
-    wat_u = calc_usage(wat, prev_val("water_raw"))
-    gas_u = calc_usage(gas, prev_val("gas_raw"))
-    hot_u = calc_usage(hot, prev_val("hot_water_raw"))
+    # 8 个累计读数表统一走带换表感知的计算函数（换表日分段计算，普通日走原逻辑）
+    hb_u  = calc_usage_with_replacement(conn, "elec_huanbei",   date, hb)
+    dtg_u = calc_usage_with_replacement(conn, "elec_datieguan", date, dtg)
+    dk1_u = calc_usage_with_replacement(conn, "dik1",           date, dk1)
+    dk2_u = calc_usage_with_replacement(conn, "dik2",           date, dk2)
+    dk5_u = calc_usage_with_replacement(conn, "dik5",           date, dk5)
+    wat_u = calc_usage_with_replacement(conn, "water",          date, wat)
+    gas_u = calc_usage_with_replacement(conn, "gas",            date, gas)
+    hot_u = calc_usage_with_replacement(conn, "hot_water",      date, hot)
     ac_h  = calc_ac_hours(conn, date)
     notes    = d.get("notes",    existing["notes"]    if existing else "") or ""
     operator = d.get("operator", existing["operator"] if existing else "") or ""
@@ -465,23 +512,15 @@ def update_entry(eid):
     gas = pick("gas_raw",             row["gas_raw"])
     hot = pick("hot_water_raw",       row["hot_water_raw"])
 
-    # 每个字段各自找最近一条有值的历史记录作为基准
-    def prev_val_edit(field):
-        r2 = conn.execute(
-            f"SELECT {field} FROM energy_entries WHERE date<? AND id!=? AND {field} IS NOT NULL ORDER BY date DESC LIMIT 1",
-            (date, eid)
-        ).fetchone()
-        return r2[field] if r2 else None
-
-    # 只对有值的字段重新计算 usage；无值则保留原 usage，避免无关字段变动影响计算结果
-    hb_u  = calc_usage(hb,  prev_val_edit("elec_huanbei_raw"),  1500) if hb  is not None else (row["elec_huanbei_usage"]  or 0)
-    dtg_u = calc_usage(dtg, prev_val_edit("elec_datieguan_raw"), 1500) if dtg is not None else (row["elec_datieguan_usage"] or 0)
-    dk1_u = calc_usage(dk1, prev_val_edit("dik1_raw"),           120)  if dk1 is not None else (row["dik1_usage"] or 0)
-    dk2_u = calc_usage(dk2, prev_val_edit("dik2_raw"),           120)  if dk2 is not None else (row["dik2_usage"] or 0)
-    dk5_u = calc_usage(dk5, prev_val_edit("dik5_raw"),           40)   if dk5 is not None else (row["dik5_usage"] or 0)
-    wat_u = calc_usage(wat, prev_val_edit("water_raw"))                 if wat is not None else (row["water_usage"] or 0)
-    gas_u = calc_usage(gas, prev_val_edit("gas_raw"))                   if gas is not None else (row["gas_usage"]   or 0)
-    hot_u = calc_usage(hot, prev_val_edit("hot_water_raw"))             if hot is not None else (row["hot_water_usage"] or 0)
+    # 8 个累计读数表统一走带换表感知的计算函数；未传新值的字段保留原 usage
+    hb_u  = calc_usage_with_replacement(conn, "elec_huanbei",   date, hb,  exclude_id=eid) if hb  is not None else (row["elec_huanbei_usage"]  or 0)
+    dtg_u = calc_usage_with_replacement(conn, "elec_datieguan", date, dtg, exclude_id=eid) if dtg is not None else (row["elec_datieguan_usage"] or 0)
+    dk1_u = calc_usage_with_replacement(conn, "dik1",           date, dk1, exclude_id=eid) if dk1 is not None else (row["dik1_usage"] or 0)
+    dk2_u = calc_usage_with_replacement(conn, "dik2",           date, dk2, exclude_id=eid) if dk2 is not None else (row["dik2_usage"] or 0)
+    dk5_u = calc_usage_with_replacement(conn, "dik5",           date, dk5, exclude_id=eid) if dk5 is not None else (row["dik5_usage"] or 0)
+    wat_u = calc_usage_with_replacement(conn, "water",          date, wat, exclude_id=eid) if wat is not None else (row["water_usage"] or 0)
+    gas_u = calc_usage_with_replacement(conn, "gas",            date, gas, exclude_id=eid) if gas is not None else (row["gas_usage"]   or 0)
+    hot_u = calc_usage_with_replacement(conn, "hot_water",     date, hot, exclude_id=eid) if hot is not None else (row["hot_water_usage"] or 0)
     ac_h  = calc_ac_hours(conn, date)
     conn.execute("""UPDATE energy_entries SET date=?,elec_huanbei_raw=?,elec_datieguan_raw=?,
         dik1_raw=?,dik2_raw=?,dik5_raw=?,water_raw=?,gas_raw=?,hot_water_raw=?,
@@ -499,6 +538,144 @@ def del_entry(eid):
     if not require_write(request): return jsonify({"error":"权限不足"}), 403
     conn = get_db(); conn.execute("DELETE FROM energy_entries WHERE id=?",(eid,))
     conn.commit(); conn.close(); return jsonify({"ok":True})
+
+# ========== 换表处理 API ==========
+# 8 个累计读数表共用一套换表机制：
+# - 前台抄表流程不变，换表日照常抄新表读数
+# - 后台登记换表记录后，系统自动重算受影响日期的用量
+# - 能耗表 raw 字段始终存当日新表读数；换表日用量按分段计算
+
+@app.route("/api/meter-replacements")
+def list_replacements():
+    """换表记录列表，可按 meter_type / date 范围筛选"""
+    mt   = request.args.get("meter_type","")
+    d    = request.args.get("date","")
+    s    = request.args.get("start","")
+    e    = request.args.get("end","")
+    q = "SELECT * FROM meter_replacements WHERE 1=1"; p = []
+    if mt: q += " AND meter_type=?"; p.append(mt)
+    if d:  q += " AND date=?";       p.append(d)
+    if s:  q += " AND date>=?";     p.append(s)
+    if e:  q += " AND date<=?";     p.append(e)
+    q += " ORDER BY date DESC, id DESC"
+    conn = get_db()
+    rows = conn.execute(q, p).fetchall()
+    # 附带中文标签，方便前端直接展示
+    out = []
+    for r in rows:
+        item = dict(r)
+        cfg = METER_CONFIG.get(item.get("meter_type"), {})
+        item["meter_label"] = cfg.get("label", item.get("meter_type"))
+        out.append(item)
+    conn.close()
+    return jsonify(out)
+
+@app.route("/api/meter-replacements", methods=["POST"])
+def create_replacement():
+    """新增换表记录
+    - 校验 meter_type 是否在 METER_CONFIG 内
+    - 同一天同一表只能有一条换表记录（UNIQUE 约束）
+    - 联动：把当天 energy_entries 对应 raw 字段更新为 new_meter_reading（新表当日读数）
+    - 调用 recalc_energy_entries_from_date 重算当天及之后所有用量
+    """
+    if not require_write(request): return jsonify({"error":"权限不足"}), 403
+    d = request.json
+    date       = d.get("date")
+    meter_type = d.get("meter_type")
+    old_end    = d.get("old_meter_end")
+    new_start  = d.get("new_meter_start") or 0
+    new_read   = d.get("new_meter_reading")
+    operator   = d.get("operator","")
+    notes      = d.get("notes","")
+
+    if not date or not meter_type:
+        return jsonify({"error":"日期和表类型必填"}), 400
+    if meter_type not in METER_CONFIG:
+        return jsonify({"error":f"不支持的表类型: {meter_type}"}), 400
+    if old_end is None or new_read is None:
+        return jsonify({"error":"旧表底数和新表当日读数必填"}), 400
+
+    conn = get_db()
+    try:
+        conn.execute("""INSERT INTO meter_replacements
+            (date,meter_type,old_meter_end,new_meter_start,new_meter_reading,operator,notes,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?)""",
+            (date, meter_type, old_end, new_start, new_read, operator, notes,
+             dt.now().isoformat(), dt.now().isoformat()))
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"error":f"{date} 该表已有换表记录，请编辑现有记录"}), 400
+
+    # 联动更新能耗表当天对应 raw 字段为新表当日读数
+    # 关键：换表日 raw 字段必须存新表读数，否则 seg_new 会用旧表读数算出天文数字
+    # 只更新已有记录，不插入新记录（避免触发前台"已有能耗记录"拒绝）
+    field = METER_CONFIG[meter_type]["field"]
+    existing = conn.execute("SELECT id FROM energy_entries WHERE date=?", (date,)).fetchone()
+    if existing:
+        conn.execute(f"UPDATE energy_entries SET {field}=? WHERE date=?", (new_read, date))
+
+    # 重算当天及之后所有用量（换表会影响后续每天的 prev 基准）
+    recalc_energy_entries_from_date(conn, date)
+    conn.commit(); conn.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/meter-replacements/<int:rid>", methods=["PUT"])
+def update_replacement(rid):
+    """编辑换表记录
+    - 允许修改 old_meter_end / new_meter_start / new_meter_reading / operator / notes
+    - 不允许改 date / meter_type（会破坏 UNIQUE 约束和重算基准）
+    - 联动：更新能耗表当天 raw 字段；重算当天及之后用量
+    """
+    if not require_write(request): return jsonify({"error":"权限不足"}), 403
+    d = request.json; conn = get_db()
+    row = conn.execute("SELECT * FROM meter_replacements WHERE id=?", (rid,)).fetchone()
+    if not row:
+        conn.close(); return jsonify({"error":"换表记录不存在"}), 404
+
+    old_end   = d.get("old_meter_end",   row["old_meter_end"])
+    new_start = d.get("new_meter_start", row["new_meter_start"]) or 0
+    new_read  = d.get("new_meter_reading", row["new_meter_reading"])
+    operator  = d.get("operator", row["operator"])
+    notes     = d.get("notes",    row["notes"])
+
+    conn.execute("""UPDATE meter_replacements SET
+        old_meter_end=?,new_meter_start=?,new_meter_reading=?,operator=?,notes=?,updated_at=?
+        WHERE id=?""",
+        (old_end, new_start, new_read, operator, notes, dt.now().isoformat(), rid))
+
+    # 联动更新能耗表当天 raw 字段为新表当日读数
+    field = METER_CONFIG[row["meter_type"]]["field"]
+    conn.execute(f"UPDATE energy_entries SET {field}=? WHERE date=?", (new_read, row["date"]))
+
+    # 重算当天及之后用量
+    recalc_energy_entries_from_date(conn, row["date"])
+    conn.commit(); conn.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/meter-replacements/<int:rid>", methods=["DELETE"])
+def delete_replacement(rid):
+    """删除换表记录
+    - 删除后该表恢复普通日计算逻辑
+    - 重算当天及之后用量（raw 字段仍存新表读数，删除换表记录后基准会变成新表读数的前一条）
+    """
+    if not require_write(request): return jsonify({"error":"权限不足"}), 403
+    conn = get_db()
+    row = conn.execute("SELECT * FROM meter_replacements WHERE id=?", (rid,)).fetchone()
+    if not row:
+        conn.close(); return jsonify({"error":"换表记录不存在"}), 404
+    conn.execute("DELETE FROM meter_replacements WHERE id=?", (rid,))
+    # 重算当天及之后用量
+    recalc_energy_entries_from_date(conn, row["date"])
+    conn.commit(); conn.close()
+    return jsonify({"ok":True})
+
+@app.route("/api/meter-replacements/types")
+def list_meter_types():
+    """返回 8 个表的配置，供前端下拉选项使用"""
+    return jsonify([
+        {"meter_type": mt, "label": cfg["label"], "mult": cfg["mult"]}
+        for mt, cfg in METER_CONFIG.items()
+    ])
 
 @app.route("/api/d1k")
 def get_ac():
@@ -673,7 +850,16 @@ def export_csv():
     if s: q += " AND date>=?"; p.append(s)
     if e: q += " AND date<=?"; p.append(e)
     rows = conn.execute(q + " ORDER BY date", p).fetchall()
+    # 查询时间范围内的换表记录，建立 (date, meter_type) 集合用于在读数后追加 ⚠换表 标记
+    rep_q = "SELECT date, meter_type FROM meter_replacements WHERE 1=1"; rep_p = []
+    if s: rep_q += " AND date>=?"; rep_p.append(s)
+    if e: rep_q += " AND date<=?"; rep_p.append(e)
+    rep_rows = conn.execute(rep_q, rep_p).fetchall()
     conn.close()
+    rep_set = {(r["date"], r["meter_type"]) for r in rep_rows}
+    def mark(date, meter_type, val):
+        """读数值后追加 ⚠换表 标记（不新增列，标记作为值的一部分）"""
+        return str(val or "") + (" ⚠换表" if (date, meter_type) in rep_set else "")
 
     if type_ == "elec":
         header = "\ufeff日期,总用电量(kWh),环北线(kWh),打铁关线(kWh),DIK-1(kWh),DIK-2(kWh),DIK-5(kWh),环北线读数,打铁关线读数,DIK-1读数,DIK-2读数,DIK-5读数,操作人"
@@ -687,11 +873,11 @@ def export_csv():
                 str(r["dik1_usage"] or 0),
                 str(r["dik2_usage"] or 0),
                 str(r["dik5_usage"] or 0),
-                str(r["elec_huanbei_raw"] or ""),
-                str(r["elec_datieguan_raw"] or ""),
-                str(r["dik1_raw"] or ""),
-                str(r["dik2_raw"] or ""),
-                str(r["dik5_raw"] or ""),
+                mark(r["date"], "elec_huanbei",   r["elec_huanbei_raw"]),
+                mark(r["date"], "elec_datieguan", r["elec_datieguan_raw"]),
+                mark(r["date"], "dik1",           r["dik1_raw"]),
+                mark(r["date"], "dik2",           r["dik2_raw"]),
+                mark(r["date"], "dik5",           r["dik5_raw"]),
                 str(r["operator"] or ""),
             ]))
         fname = f"energy_elec_{s}_{e}.csv"
@@ -702,9 +888,9 @@ def export_csv():
             lines.append(",".join([
                 str(r["date"]),
                 str(r["water_usage"] or 0),
-                str(r["water_raw"] or ""),
+                mark(r["date"], "water",     r["water_raw"]),
                 str(r["hot_water_usage"] or 0),
-                str(r["hot_water_raw"] or ""),
+                mark(r["date"], "hot_water", r["hot_water_raw"]),
                 str(r["operator"] or ""),
             ]))
         fname = f"energy_water_{s}_{e}.csv"
@@ -715,7 +901,7 @@ def export_csv():
             lines.append(",".join([
                 str(r["date"]),
                 str(r["gas_usage"] or 0),
-                str(r["gas_raw"] or ""),
+                mark(r["date"], "gas", r["gas_raw"]),
                 str(r["operator"] or ""),
             ]))
         fname = f"energy_gas_{s}_{e}.csv"
@@ -755,14 +941,14 @@ def export_csv():
                 str(r["water_usage"] or 0),
                 str(r["gas_usage"] or 0),
                 str(r["hot_water_usage"] or 0),
-                str(r["elec_huanbei_raw"] or ""),
-                str(r["elec_datieguan_raw"] or ""),
-                str(r["dik1_raw"] or ""),
-                str(r["dik2_raw"] or ""),
-                str(r["dik5_raw"] or ""),
-                str(r["water_raw"] or ""),
-                str(r["gas_raw"] or ""),
-                str(r["hot_water_raw"] or ""),
+                mark(r["date"], "elec_huanbei",   r["elec_huanbei_raw"]),
+                mark(r["date"], "elec_datieguan", r["elec_datieguan_raw"]),
+                mark(r["date"], "dik1",           r["dik1_raw"]),
+                mark(r["date"], "dik2",           r["dik2_raw"]),
+                mark(r["date"], "dik5",           r["dik5_raw"]),
+                mark(r["date"], "water",          r["water_raw"]),
+                mark(r["date"], "gas",            r["gas_raw"]),
+                mark(r["date"], "hot_water",      r["hot_water_raw"]),
                 str(r["operator"] or ""),
                 str(r["notes"] or ""),
             ]))

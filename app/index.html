@@ -433,6 +433,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14
     <div class="subtab" id="atab-notes" onclick="adminTab('notes')">交接班记录</div>
     <div class="subtab" id="atab-export" onclick="adminTab('export')">月度报表导出</div>
     <div class="subtab" id="atab-settings" onclick="adminTab('settings')">系统设置</div>
+    <div class="subtab" id="atab-replacement" onclick="adminTab('replacement')">换表处理</div>
   </div>
   <div class="content">
 
@@ -727,8 +728,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14
             </div>
             <div style="overflow-x:auto;margin-bottom:16px">
               <table class="tbl">
-                <thead><tr><th>账号</th><th>角色</th><th>能耗</th><th>空调</th><th>锅炉</th><th>账号</th><th>导出</th><th>设置</th><th style="min-width:90px">操作</th></tr></thead>
-                <tbody id="users-tbody"><tr><td colspan="9" class="loading">加载中...</td></tr></tbody>
+                <thead><tr><th>账号</th><th>角色</th><th>能耗</th><th>空调</th><th>锅炉</th><th>账号</th><th>导出</th><th>设置</th><th>换表</th><th style="min-width:90px">操作</th></tr></thead>
+                <tbody id="users-tbody"><tr><td colspan="10" class="loading">加载中...</td></tr></tbody>
               </table>
             </div>
             <div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);padding:14px">
@@ -755,6 +756,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14
                   <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:5px 8px;background:var(--bg4);border-radius:6px"><input type="checkbox" name="nu-perm" value="users"> 账号管理</label>
                   <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:5px 8px;background:var(--bg4);border-radius:6px"><input type="checkbox" name="nu-perm" value="export" checked> 月度导出</label>
                   <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:5px 8px;background:var(--bg4);border-radius:6px"><input type="checkbox" name="nu-perm" value="settings"> 系统设置</label>
+                  <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:5px 8px;background:var(--bg4);border-radius:6px"><input type="checkbox" name="nu-perm" value="meter_replacement" checked> 换表处理</label>
                 </div>
               </div>
               <div style="margin-top:12px;display:flex;align-items:center;gap:10px">
@@ -768,7 +770,91 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14
       </div>
     </div>
 
+    <!-- Replacement tab: 换表处理 -->
+    <div id="admin-replacement" style="display:none">
+      <div class="card">
+        <div class="card-hd">
+          <span class="card-title"><span class="icon" style="background:var(--amber)"></span>换表处理</span>
+          <button class="btn btn-sm btn-blue" onclick="openReplacementModal()">+ 新增换表记录</button>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:12px;line-height:1.7">
+          8 个累计读数表（环北线电表/打铁关线电表/DIK-1/2/5 分表/水表/气表/热水表）共用一套换表机制。<br>
+          前台抄表流程不变，换表日照常抄新表读数；后台登记换表记录后系统自动重算受影响日期的用量。
+        </div>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:14px">
+          <div class="fg" style="margin:0;min-width:140px">
+            <label>筛选表类型</label>
+            <select id="rep-filter-type" onchange="loadReplacements()">
+              <option value="">全部</option>
+            </select>
+          </div>
+          <button class="btn btn-sm" onclick="loadReplacements()">刷新</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="tbl">
+            <thead><tr>
+              <th>日期</th><th>表类型</th><th>旧表底数</th><th>新表起数</th>
+              <th>新表当日读数</th><th>操作人</th><th>备注</th><th style="min-width:90px">操作</th>
+            </tr></thead>
+            <tbody id="rep-tbody"><tr><td colspan="8" class="loading">加载中...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
 
+    <!-- 换表记录 新增/编辑 弹窗 -->
+    <div class="modal-wrap" id="modal-replacement">
+      <div class="modal" style="max-width:540px">
+        <div class="modal-hd">
+          <h2 id="modal-rep-title">新增换表记录</h2>
+          <button class="btn btn-sm" onclick="closeModal('modal-replacement')">关闭</button>
+        </div>
+        <input type="hidden" id="rep-id">
+        <div class="fg-row2">
+          <div class="fg" style="margin:0">
+            <label>换表日期</label>
+            <input type="date" id="rep-date">
+          </div>
+          <div class="fg" style="margin:0">
+            <label>表类型</label>
+            <select id="rep-type"></select>
+          </div>
+        </div>
+        <div class="fg-row2" style="margin-top:10px">
+          <div class="fg" style="margin:0">
+            <label>旧表底数（换表前最后读数）</label>
+            <input type="number" id="rep-old-end" step="0.01" placeholder="旧表拆下时的读数">
+          </div>
+          <div class="fg" style="margin:0">
+            <label>新表起数</label>
+            <input type="number" id="rep-new-start" step="0.01" placeholder="新表安装时起始读数" value="0">
+          </div>
+        </div>
+        <div class="fg" style="margin-top:10px">
+          <label>新表当日读数（换表日抄表读数）</label>
+          <input type="number" id="rep-new-reading" step="0.01" placeholder="换表当天抄到的新表读数">
+        </div>
+        <div class="fg-row2" style="margin-top:10px">
+          <div class="fg" style="margin:0">
+            <label>操作人</label>
+            <input type="text" id="rep-operator" placeholder="操作人姓名">
+          </div>
+          <div class="fg" style="margin:0">
+            <label>备注</label>
+            <input type="text" id="rep-notes" placeholder="备注（选填）">
+          </div>
+        </div>
+        <div style="margin-top:12px;padding:10px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--r);font-size:11px;color:var(--text2);line-height:1.7">
+          <b>说明：</b>换表日用量 = (旧表底数 − 上次读数) × 倍率 + (新表当日读数 − 新表起数) × 倍率<br>
+          提交后系统自动重算当天及之后所有用量。
+        </div>
+        <div id="rep-msg" style="font-size:12px;min-height:18px;margin-top:10px;color:var(--danger)"></div>
+        <div style="display:flex;justify-content:flex-end;margin-top:16px;gap:8px">
+          <button class="btn" onclick="closeModal('modal-replacement')">取消</button>
+          <button class="btn btn-accent" onclick="saveReplacement()">保存</button>
+        </div>
+      </div>
+    </div>
 
 </div>
 
@@ -2248,13 +2334,13 @@ function goPage(id) {
   if (id === 'pg-front') renderFront();
 }
 function adminTab(t) {
-  ['energy','d1k','boiler','notes','export','settings'].forEach(function(k) {
+  ['energy','d1k','boiler','notes','export','settings','replacement'].forEach(function(k) {
     document.getElementById('admin-' + k).style.display = k === t ? 'block' : 'none';
     document.getElementById('atab-' + k).classList.toggle('active', k === t);
   });
   if (t === 'settings') loadSettings();
   if (t === 'notes') loadNotesTable();
-
+  if (t === 'replacement') loadReplacements();
   if (t === 'boiler') loadBoilerTable();
 }
 function openModal(id) { document.getElementById(id).classList.add('open'); }
@@ -2304,9 +2390,9 @@ var _adminRole  = 'viewer';
 var _adminToken = '';
 var _adminPerms = {};  // {energy:true, ac_log:true, ...}
 
-var PERM_KEYS = ["energy","ac_log","boiler_log","users","export","settings"];
-var PERM_LABELS = {energy:"能耗记录",ac_log:"空调开关",boiler_log:"锅炉开关",users:"账号管理",export:"月度导出",settings:"系统设置"};
-var PERM_TABS   = {energy:"atab-energy",ac_log:"atab-d1k",boiler_log:"atab-boiler",export:"atab-export",settings:"atab-settings"};
+var PERM_KEYS = ["energy","ac_log","boiler_log","users","export","settings","meter_replacement"];
+var PERM_LABELS = {energy:"能耗记录",ac_log:"空调开关",boiler_log:"锅炉开关",users:"账号管理",export:"月度导出",settings:"系统设置",meter_replacement:"换表处理"};
+var PERM_TABS   = {energy:"atab-energy",ac_log:"atab-d1k",boiler_log:"atab-boiler",export:"atab-export",settings:"atab-settings",meter_replacement:"atab-replacement"};
 
 // 根据权限控制后台标签可见性
 function applyPermissions() {
@@ -2333,7 +2419,8 @@ function applyPermissions() {
     ac_log:     'atab-d1k',
     boiler_log: 'atab-boiler',
     export:     'atab-export',
-    settings:   'atab-settings'
+    settings:   'atab-settings',
+    meter_replacement: 'atab-replacement'
   };
   // 系统设置标签：有 settings 权限 OR 有 users 权限（账号管理在设置里）
   if (!isSuperadmin) {
@@ -2498,6 +2585,137 @@ function delBoilerRec(id) {
     .then(function(d){ if(d.ok){ toast('已删除'); loadBoilerTable(); } else { toast('删除失败','err'); } });
 }
 
+// ── 换表处理 ────────────────────────────────────────────────
+var _meterTypes = [
+  {meter_type:'elec_huanbei',   label:'环北线电表'},
+  {meter_type:'elec_datieguan', label:'打铁关线电表'},
+  {meter_type:'dik1',           label:'DIK-1 分表'},
+  {meter_type:'dik2',           label:'DIK-2 分表'},
+  {meter_type:'dik5',           label:'DIK-5 分表'},
+  {meter_type:'water',          label:'水表'},
+  {meter_type:'gas',            label:'气表'},
+  {meter_type:'hot_water',      label:'热水表'}
+];
+var _repCache = [];
+
+function initRepTypeSelects() {
+  // 筛选下拉 + 弹窗下拉
+  var filter = document.getElementById('rep-filter-type');
+  var sel = document.getElementById('rep-type');
+  // 保留筛选已有值
+  var filterVal = filter ? filter.value : '';
+  if (filter) {
+    filter.innerHTML = '<option value="">全部</option>' + _meterTypes.map(function(t){
+      return '<option value="' + t.meter_type + '">' + t.label + '</option>';
+    }).join('');
+    filter.value = filterVal;
+  }
+  if (sel) {
+    sel.innerHTML = _meterTypes.map(function(t){
+      return '<option value="' + t.meter_type + '">' + t.label + '</option>';
+    }).join('');
+  }
+}
+
+function loadReplacements() {
+  initRepTypeSelects();
+  var filterType = document.getElementById('rep-filter-type').value;
+  var url = API + '/meter-replacements';
+  var params = [];
+  if (filterType) params.push('meter_type=' + encodeURIComponent(filterType));
+  if (params.length) url += '?' + params.join('&');
+  fetch(url).then(function(r){ return r.json(); }).then(function(rows) {
+    _repCache = rows;
+    var tb = document.getElementById('rep-tbody');
+    if (!rows.length) { tb.innerHTML = '<tr><td colspan="8" class="loading">暂无换表记录</td></tr>'; return; }
+    tb.innerHTML = rows.map(function(r) {
+      var rdata = JSON.stringify(r).replace(/"/g,'&quot;');
+      var label = r.meter_label || r.meter_type;
+      return '<tr>' +
+        '<td class="mono">' + r.date + '</td>' +
+        '<td>' + label + '</td>' +
+        '<td class="mono">' + (r.old_meter_end!=null ? r.old_meter_end : '—') + '</td>' +
+        '<td class="mono">' + (r.new_meter_start!=null ? r.new_meter_start : '—') + '</td>' +
+        '<td class="mono">' + (r.new_meter_reading!=null ? r.new_meter_reading : '—') + '</td>' +
+        '<td>' + (r.operator||'—') + '</td>' +
+        '<td style="color:var(--text2);font-size:12px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (r.notes||'') + '</td>' +
+        '<td><button class="btn btn-sm" onclick="editReplacement(' + rdata + ')">编辑</button> <button class="btn btn-sm btn-danger" onclick="delReplacement(' + r.id + ')">删除</button></td>' +
+        '</tr>';
+    }).join('');
+  });
+}
+
+function openReplacementModal() {
+  initRepTypeSelects();
+  document.getElementById('modal-rep-title').textContent = '新增换表记录';
+  document.getElementById('rep-id').value = '';
+  document.getElementById('rep-date').value = getLocalDate();
+  document.getElementById('rep-type').value = _meterTypes[0].meter_type;
+  document.getElementById('rep-old-end').value = '';
+  document.getElementById('rep-new-start').value = '0';
+  document.getElementById('rep-new-reading').value = '';
+  document.getElementById('rep-operator').value = _adminUser || '';
+  document.getElementById('rep-notes').value = '';
+  document.getElementById('rep-msg').textContent = '';
+  openModal('modal-replacement');
+}
+
+function editReplacement(r) {
+  initRepTypeSelects();
+  document.getElementById('modal-rep-title').textContent = '编辑换表记录';
+  document.getElementById('rep-id').value = r.id;
+  document.getElementById('rep-date').value = r.date;
+  document.getElementById('rep-type').value = r.meter_type;
+  document.getElementById('rep-old-end').value = r.old_meter_end!=null ? r.old_meter_end : '';
+  document.getElementById('rep-new-start').value = r.new_meter_start!=null ? r.new_meter_start : '0';
+  document.getElementById('rep-new-reading').value = r.new_meter_reading!=null ? r.new_meter_reading : '';
+  document.getElementById('rep-operator').value = r.operator || '';
+  document.getElementById('rep-notes').value = r.notes || '';
+  document.getElementById('rep-msg').textContent = '';
+  openModal('modal-replacement');
+}
+
+function saveReplacement() {
+  var id = document.getElementById('rep-id').value;
+  var msg = document.getElementById('rep-msg');
+  var body = {
+    date:            document.getElementById('rep-date').value,
+    meter_type:      document.getElementById('rep-type').value,
+    old_meter_end:   parseFloat(document.getElementById('rep-old-end').value),
+    new_meter_start: parseFloat(document.getElementById('rep-new-start').value) || 0,
+    new_meter_reading: parseFloat(document.getElementById('rep-new-reading').value),
+    operator:        document.getElementById('rep-operator').value,
+    notes:           document.getElementById('rep-notes').value
+  };
+  if (!body.date) { msg.textContent = '请选择换表日期'; return; }
+  if (isNaN(body.old_meter_end)) { msg.textContent = '请填写旧表底数'; return; }
+  if (isNaN(body.new_meter_reading)) { msg.textContent = '请填写新表当日读数'; return; }
+
+  var url = API + '/meter-replacements';
+  var method = 'POST';
+  if (id) { url += '/' + id; method = 'PUT'; }
+
+  fetch(url, { method: method, headers: { 'Content-Type': 'application/json', 'X-Session-Token': _adminToken }, body: JSON.stringify(body) })
+    .then(function(r){ return r.json(); })
+    .then(function(d) {
+      if (d.ok) {
+        closeModal('modal-replacement');
+        toast(id ? '修改成功，已重算用量' : '换表记录已保存，已重算用量');
+        loadReplacements();
+      } else {
+        msg.textContent = d.error || '保存失败';
+      }
+    })
+    .catch(function() { msg.textContent = '网络错误'; });
+}
+
+function delReplacement(id) {
+  if (!confirm('确认删除此换表记录？删除后该表当天及之后的用量将被重算。')) return;
+  fetch(API + '/meter-replacements/' + id, { method: 'DELETE', headers: { 'X-Session-Token': _adminToken } })
+    .then(function(r){ return r.json(); })
+    .then(function(d){ if(d.ok){ toast('已删除，已重算用量'); loadReplacements(); } else { toast('删除失败','err'); } });
+}
+
 // ── 用户管理 ────────────────────────────────────────────────
 var _usersCache = [];
 function loadUsers() {
@@ -2507,10 +2725,10 @@ function loadUsers() {
     if (cnt) cnt.textContent = '共 ' + users.length + ' 个账号';
     var tb = document.getElementById('users-tbody');
     if (!tb) return;
-    if (!users.length) { tb.innerHTML = '<tr><td colspan="10" class="loading">暂无用户</td></tr>'; return; }
+    if (!users.length) { tb.innerHTML = '<tr><td colspan="11" class="loading">暂无用户</td></tr>'; return; }
     var roleLabel = { superadmin:'超级管理员', admin:'管理员', viewer:'只读' };
-    var permKeys = ['energy','ac_log','boiler_log','users','export','settings'];
-    var permNames = {energy:'能耗记录',ac_log:'空调开关',boiler_log:'锅炉开关',users:'账号管理',export:'月度导出',settings:'系统设置'};
+    var permKeys = ['energy','ac_log','boiler_log','users','export','settings','meter_replacement'];
+    var permNames = {energy:'能耗记录',ac_log:'空调开关',boiler_log:'锅炉开关',users:'账号管理',export:'月度导出',settings:'系统设置',meter_replacement:'换表处理'};
     tb.innerHTML = users.map(function(u) {
       var isSuperadmin = u.role === 'superadmin';
       var perms = {};
@@ -2576,7 +2794,7 @@ function createUser() {
         document.getElementById('nu-user').value='';
         document.getElementById('nu-pass').value='';
         // 重置 checkbox
-        document.querySelectorAll('#nu-perms input[type=checkbox]').forEach(function(cb){ cb.checked = ['energy','ac_log','boiler_log','export'].includes(cb.value); });
+        document.querySelectorAll('#nu-perms input[type=checkbox]').forEach(function(cb){ cb.checked = ['energy','ac_log','boiler_log','export','meter_replacement'].includes(cb.value); });
         loadUsers();
       } else { msg.style.color='var(--red)'; msg.textContent=d.error||'添加失败'; }
     });
